@@ -16,11 +16,12 @@ OBJ=bc2d.o cuda_kernels.o adtp.o
 
 
 bc2d: ${OBJ}
+	mkdir ../bin
 	${LD} -o ../bin/$(EXEC) ${OBJ} ${LDFLAGS}
 
 .c.o:; $(CC) $(CFLAGS) -I$(MPI_DIR)/include    $< -o $@
 
-%.o: %.cu
+%.o: %.cu        
 	$(CUDACC) $(CUDACFLAGS) $(CUDA_ARCH) -I$(MPI_DIR)/include -lm $<
 clean:
 	rm -rf *.o ../bin/$(EXEC)
