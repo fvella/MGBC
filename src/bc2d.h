@@ -1,8 +1,10 @@
 #ifndef _BFS2D_H_
 #define _BFS2D_H_
-
+//Optimizations 
 #define OVERLAP 1
 #define ONEPREFIX 1
+
+//Comment to use CUB
 #define THRUST 1
 //#define _LARGE_LVERTS_NUM
 #ifdef	_LARGE_LVERTS_NUM
