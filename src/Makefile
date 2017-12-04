@@ -16,7 +16,7 @@ OBJ=bc2d.o cuda_kernels.o adtp.o
 
 
 bc2d: ${OBJ}
-	mkdir ../bin
+	mkdir -p ../bin
 	${LD} -o ../bin/$(EXEC) ${OBJ} ${LDFLAGS}
 
 .c.o:; $(CC) $(CFLAGS) -I$(MPI_DIR)/include    $< -o $@
