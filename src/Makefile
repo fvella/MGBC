@@ -1,7 +1,7 @@
 CC=gcc
 LD=gcc
 EXEC=mgbc
-CUDAHOME=/usr/local/cuda-8.0.61/
+CUDAHOME=<path>
 CUDACC=$(CUDAHOME)/bin/nvcc 
 CUDA_ARCH=-arch=sm_35
 CUDACFLAGS=-m64 -c -O3  --ptxas-options=-v -DCUDA
@@ -16,7 +16,7 @@ OBJ=bc2d.o cuda_kernels.o adtp.o
 
 
 bc2d: ${OBJ}
-	mkdir ../bin
+	mkdir -p ../bin
 	${LD} -o ../bin/$(EXEC) ${OBJ} ${LDFLAGS}
 
 .c.o:; $(CC) $(CFLAGS) -I$(MPI_DIR)/include    $< -o $@
