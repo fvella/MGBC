@@ -16,7 +16,7 @@
 #include <time.h>
 #include "bc2d.h"
 #define GRAPH_GENERATOR_MPI
-#include "../../generator/make_graph.h"
+#include "../generator/make_graph.h"
 
 
 #define VTAG(t) (  0*ntask+(t))
