@@ -12,7 +12,7 @@ The computation time of a 234 million edges graph is reduced to less than 2 hour
 
 ### How do I get set up? ###
 
-Dependencies Tested: MPI implementation for CRAY, cuda-6.5+ and Comput capability >= 3.5
+Dependencies Tested: MPI implementation for CRAY, cuda-6.5+ and compute capability >= 3.5
 
 ```
 cd bc2d/generator
@@ -27,9 +27,9 @@ make -f Makefile
 EXEC: bc2d/bin
 
 Usage: 
-./bc2d-devel -h
+./mgbc -h
 
-         $> bin/bc2d-1d -p RxC  [-o outfile] [-D] [-d] [-m] [-N <# of serarch>] [-H 0,1] 
+         $> bin/mgbc -p RxC  [-o outfile] [-D] [-d] [-m] [-N <# of serarch>] [-H 0,1] 
 
          -> to visit a graph read from file: 
 
@@ -63,7 +63,7 @@ degree-1 ON;
 4 processors arranged in 2x2 mesh;
 bc rounds 10000;
 ```
-$> mpirun -np 4 bc2d-1d -p 2x2 -S 20 -E 16 -N 10000 -H 1
+$> mpirun -np 4 mgbc -p 2x2 -S 20 -E 16 -N 10000 -H 1
 ```
 **MGBC-3D**
 
@@ -74,7 +74,7 @@ degree-1 ON
 processors 8 arranged in 2 subclusters 2x2.
 bc rounds 10000 BC round.
 ```
-$> mpirun -np 8 bc2d-1d -p 2x2 -S 20 -E 16 -N 10000 -H 1
+$> mpirun -np 8 mgbc -p 2x2 -S 20 -E 16 -N 10000 -H 1
 ```
 
 ### References  ###

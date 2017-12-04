@@ -1,6 +1,6 @@
 CC=gcc
 LD=gcc
-EXEC=bc2d-devel
+EXEC=mgbc
 CUDAHOME=/usr/local/cuda-9.0
 CUDACC=$(CUDAHOME)/bin/nvcc 
 CUDA_ARCH=-arch=sm_35
