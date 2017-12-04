@@ -4,14 +4,15 @@
 Betweenness Centrality (BC) is steadily growing in popularity as a metrics of the influence of a vertex in a graph. 
 The exact BC computation for a large scale graph is an extraordinary challenging and requires high performance computing techniques to provide results in a reasonable amount of time. 
 We provide MGBC to speed-up the computation of the BC on Multi-GPU systems. 
-MGBC supports 2-D and 3-D decomposition of the graph and multi-level parallelism. 
+MGBC supports 2-D and 3-D decomposition of the graph and multi-level parallelism.
+MGBC supports degree-1 reduction (2D and 3D) and DMF algorithms heuristics (only single GPU). 
 Experimental results show that the proposed techniques are well suited to compute BC scores in graphs which are too large to fit in single GPU memory. 
 The computation time of a 234 million edges graph is reduced to less than 2 hours.
 
 
 ### How do I get set up? ###
 
-Dependencies Tested: MPI implementation for CRAY, cuda-6.5+ and Comput capability 3.5> 
+Dependencies Tested: MPI implementation for CRAY, cuda-6.5+ and Comput capability >= 3.5
 
 ```
 cd bc2d/generator
