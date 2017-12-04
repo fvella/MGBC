@@ -16,7 +16,7 @@
 #include <time.h>
 #include "bc2d.h"
 #define GRAPH_GENERATOR_MPI
-#include "../generator/make_graph.h"
+#include "../../generator/make_graph.h"
 
 
 #define VTAG(t) (  0*ntask+(t))
@@ -118,20 +118,6 @@ void writeStats()
 	fprintf(fout, "Command Line: %s\n", cmdLine);
 
 	fflush(stdout);
-
-	/*
-	uint64_t id; 		// Vertex identifier
-		LOCINT degree;      // Vertex degree
-		int lvl;		    // Levels explored
-		uint64_t msgSize;   // MPI message size
-		uint64_t visited;   // Vertices visited
-		LOCINT nfrt[256];  // For each level how many elements in the frontier
-		uint64_t upw[2];    // Communication and Computation time
-		uint64_t dep[2];    // Communication and Computation time
-		uint64_t upd[2];    // Communication and Computation time
-		uint64_t over;      // overlap time
-		uint64_t tot;
-	*/
 
 	if (loc_count>0)
 		fprintf(fout,"N.\tID\tDegree\tLevel\tVisited\tTot_T\tTot_CUDA\tTot_MPI\tUpw_C\tUpw_M"
@@ -1254,427 +1240,6 @@ static void analyze_deg(LOCINT *deg, int n) {
 	freeMem(deg_count);
 }
 
-static double bc_func(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* frt, int* hFnum,
-                      LOCINT *msk, int *lvl, LOCINT *deg,
-                      LOCINT *sigma, LOCINT *frt_sig, float *delta, LOCINT rem_ed,
-                      uint64_t v0, LOCINT *vRbuf, int *vRnum, LOCINT *hSbuf, int *hSnum, LOCINT *hRbuf,
-                      int *hRnum, float *hSFbuf, float *hRFbuf, LOCINT *reach,
-					  MPI_Request *vrequest, MPI_Request *hrequest, MPI_Status *status,
-					  uint64_t* total_time, uint64_t* compu_time, uint64_t* commu_time, int dump) {
-
-	int      level = 0, ncol;
-	int64_t  i, j;
-	uint64_t n=1, ned, nfrt=0;
-	uint64_t nvisited = 1;
-	double   teps=0;
-
-	LOCINT *frt_all_start;
-
-	TIMER_DEF(0);
-
-#ifdef _TIMINGS
-        TIMER_DEF(1);
-#ifdef _FINE_TIMINGS
-        uint64_t msgSize = 0, anfrt = 0;
-        uint64_t upwm_time=0;   // UPWard Mpi
-        uint64_t upwc_time=0;   // UPWard Cuda
-        uint64_t depm_time=0;  	// DEPendency Mpi
-        uint64_t depc_time=0;   // DEPendency Cuda
-        uint64_t updm_time=0;   // UPDate bc Mpi
-        uint64_t updc_time=0;   // UPDate bc Cuda
-        uint64_t overlap_time = 0;
-#endif
-        uint64_t cuda_time = 0, mpi_time = 0;
-#endif
-	*total_time=0;
-	*compu_time=0;
-	*commu_time=0;
-
-	memset(frt_all, 0,MAX(col_bl, row_pp)*sizeof(*frt_all));
-	memset(hFnum, 0, row_bl*sizeof(*hFnum));
-
-	memset((LOCINT *)sigma, 0, row_pp*sizeof(*sigma));
-	memset((float*)delta,0,row_bl*sizeof(*delta));
-	memset((int *)lvl, 0, row_pp*sizeof(*lvl));
-	memset((float *)hSFbuf, 0, MAX(col_bl, row_pp)*sizeof(*hSFbuf));
-	memset((float *)hRFbuf, 0, MAX(col_bl, row_pp)*sizeof(*hRFbuf));
-
-	frt_all_start = frt_all;
-
-	/* search for start edge */
-	if (VERT2PROC(v0) == myid) {
-		// Add root vertex to the Frontier
-
-		// Get local value for vertex
-		LOCINT lv0 = GI2LOCI(v0);  // Row index
-		// Set BFS level
-		lvl[lv0] = 0;
-		// Update Bit Mask
-		MSKSET(msk,lv0);
-		// Add root vertex to frontier
-		frt[nfrt] = MYLOCI2LOCJ(lv0);   // Col index
-		// Set sigma
-		sigma[lv0] = 1;
-		frt_sig[nfrt] = 1;
-		nfrt++;
-
-		set_mlp_cuda(lv0, 0, 1);
-	}
-	// START BFS
-	MPI_Barrier(MPI_COMM_CLUSTER);
-	TIMER_START(0);
-
-//      if (myid==0) fprintf(stdout, "Root_vertex = %lu\n", v0);
-        //MPI_Pcontrol(1);
-	while(1) {
-
-#ifdef _FINE_TIMINGS
-		addStats(v0, level, n);
-#endif
-			// We start a new BFS level
-		level++;
-
-        //dump_array2(&level,1,"BFS_LEVEL");
-		// col-send frt
-		// col-recv frts in vRbuf[0:R-1]
-#ifdef _TIMINGS
-		TIMER_START(1);
-#endif
-		// Exchange vertices in the frontier by column - EXPAND
-		// For each vertex in the frontier send sigma as well
-		// Here we use the old offset since we are sending Current Frontier
-		exchange_vert4x2(frt, frt_sig, nfrt, vRbuf, row_bl, vRnum, vrequest, status, 1);
-		ncol = 0;
-		/* HERE WE NEED TO COPY ALL FRONTIERS INTO frt_all */ //the error is here
-		for(i = 0; i < R; i++) {
-			if (vRnum[i] > 0) {
-			   memcpy(frt_all + ncol, vRbuf+2*i*row_bl, vRnum[i]*sizeof(*vRbuf));
-			   ncol +=vRnum[i];
-			}
-		}
-		hFnum[level] = hFnum[level-1] + ncol;
-		frt_all += ncol;
-
-		// Now we have in vRbuf all vertices from all frontiers on the same Column
-		// vRnum is an array of size R containing how many elements are in VRbuf for each processor
-		// NOTE: we cannot have duplicates in vRbuf since each processor can send only nodes that it owns
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		mpi_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		upwm_time += mpi_time;
-#endif
-		*commu_time += mpi_time;
-		TIMER_START(1);
-#endif
-
-		// Get neightbour vertices that have not been visited yet and put them into hSbuf
-		/*
-		 *  vRbuf contains the frontier according to the following pattern
-		 *  each vRbuf[i] is long row_bl and contains vRnum[i] elements
-		 *  Va,Vb,Vc,Sa,Sb,Sc
-		 */
-
-		nfrt = scan_col_csc_cuda(vRbuf, row_bl, vRnum, R, hSbuf, hSnum, frt, frt_sig, level);
-		//printf("SCAN_COL_CSC: NFRT %d PROCESSOR %d\n",nfrt,myid);
-		// Here we have hSbuf containing Vertices and Sigmas in the following format
-		/*
-		 * P 0 -> Va,Vb,Vc,Sa,Sb,Sc
-		 * P 1 -> Vd,Ve,Sd,Se
-		 */
-
-#ifdef _TIMINGS
-        TIMER_STOP(1);
-        cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-        anfrt = nfrt;
-        upwc_time += cuda_time;
-#endif
-        *compu_time += cuda_time;
-        TIMER_START(1);
-#endif
-		// WE NEED TO SEND SIGMA
-		// row-send hSbuf[0:C-1]
-		// row-recv hRbuf[0:C-1]
-		exchange_horiz4x2(hSbuf, row_bl, hSnum, hRbuf, row_bl, hRnum, hrequest, status, 1);
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		mpi_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		upwm_time += mpi_time;
-#endif
-		*commu_time += mpi_time;
-		TIMER_START(1);
-#endif
-
-		// WE NEED TO UPDATE SIGMA
-		nfrt = append_rows_cuda(hRbuf, row_bl, hRnum, C, frt, frt_sig, nfrt, level);
-        //printf("APPEND_ROWS: NFRT %d PROCESSOR %d\n",nfrt,myid);
-
-		//dump_uarray2(frt , nfrt, "Frontier Append");
-		//dump_uarray2(frt_sig , nfrt, "Frontier Sigma Append");
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		upwc_time += cuda_time;
-#endif
-		*compu_time += cuda_time;
-		TIMER_START(1);
-#endif
-			// Get in n the total number of vertices in the NLFS
-		MPI_Allreduce(&nfrt, &n, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_CLUSTER);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		mpi_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		upwm_time += mpi_time;
-#endif
-		*commu_time += mpi_time;
-#endif
-		// if (myid == 0) fprintf(stdout, "[%7.3lf%%] %"PRIu64"\n", (n*100.0)/N, n);
-		if (n == 0) break; // Exit from the loop since we do not have new vertices to visit
-		nvisited += n;
-
-	} // While(1)
-
-	//fprintf(outdebug, "BFS_done-visited=%d\n",nvisited);
-	// Copy sigma value from device to CPU
-	//dump_array2(lvl, row_pp, "Final Level");
-	//dump_uarray2(frt_all_start, hFnum[level], "All Verticals Frontier");
-	//dump_array2(hFnum, level, "Final hFnum");
-
-	// Get Sigma and Level by row
-
-	if (ntask > 1){
-		MPI_Barrier(MPI_COMM_CLUSTER);
-
-#ifdef _FINE_TIMINGS
-		TIMER_START(1);
-#endif
-
-#ifdef OVERLAP
-		set_get_overlap(sigma,lvl);
-#else
-		get_sigma(sigma);
-		get_lvl(lvl);
-		//sync cudaEventSynchronize( get_sigma_event );
-		//MPI_Allreduce(MPI_IN_PLACE, sigma, row_pp, LOCINT_MPI, MPI_SUM, Row_comm);
-		MPI_Allgather(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, sigma, row_bl, LOCINT_MPI, Row_comm);
-		set_sigma(sigma);
-		//sync cudaEventSynchronize( get_lvl_event );
-		//MPI_Allreduce(MPI_IN_PLACE, lvl,   row_pp, MPI_INT,    MPI_SUM, Row_comm);
-		MPI_Allgather(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, lvl, row_bl, MPI_INT, Row_comm);
-		set_lvl(lvl);
-#endif
-		MPI_Barrier(MPI_COMM_CLUSTER);
-
-#ifdef _FINE_TIMINGS
-		TIMER_STOP(1);
-        overlap_time += TIMER_ELAPSED(1);
-#endif
-	}
-
-    // SIGMA e LEVEL SONO INDICIZZATI PER RIGA
-	// Copy back sigma value from device to CPU
-	int depth = level - 2;
-
-	frt = frt_all_start;
-	ncol = 0;
-	do {
-		//fprintf(outdebug, "Depth %d\n", depth);
-		//dump_array2(&depth, 1, "-- DEPTH --");
-		// exchange delta values calculated in the previous round
-		//MPI_Allreduce(MPI_IN_PLACE, hSRbuf, ncol, MPI_FLOAT, MPI_SUM, Col_comm);
-
-#ifdef _TIMINGS
-		TIMER_START(1);
-#endif
-
-		ncol = hFnum[depth+1] - hFnum[depth]; // number of vertices to process
-		frt = frt_all_start + hFnum[depth];
-		// Here I calculate hSRbuf for each vertex in the frontier
-		// using the same index of the frontier
-		scan_frt_csc_cuda(frt, ncol, depth, hRFbuf);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		depc_time += cuda_time;
-#endif
-		*compu_time += cuda_time;
-		TIMER_START(1);
-#endif
-
-		//hSRbuf contains the contribute to delta
-		// Instead of exchanging all hSRbuf values I could send only to those
-		// processors that own it. To do that hSRbuf should be referenced using the
-		// same index of the CSC. Now instead we use the frontier index
-		// After an additional thought I understood that if we want to send only the
-		// local aggregated accumulation we have to use the frontier index since that is shared among
-		// processors in the same column
-		if (R>1)
-			MPI_Allreduce(MPI_IN_PLACE, hRFbuf, ncol, MPI_FLOAT, MPI_SUM, Col_comm);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		mpi_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		depm_time += mpi_time;
-#endif
-		*commu_time += mpi_time;
-		TIMER_START(1);
-#endif
-        //fprintf(outdebug, "wdc\n");
-        // Copy back hSRbuf into device memory and calculate delta
-		// Call device function to update delta values
-		// We can have all delta values into DEVICE memory only
-		write_delta_cuda(ncol, hRFbuf, hSFbuf);
-		// Copy delta values into host buffer for sending by column
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		depc_time += cuda_time;
-#endif
-		*compu_time += cuda_time;
-		TIMER_START(1);
-#endif
-
-		//fprintf(outdebug, "wdc - 2\n");
-		// SEND BACK DELTA BY ROW!!!
-		//dump_farray2(hSFbuf, row_pp, "hSFbuf BEFORE");
-
-		if (C>1)
-			//MPI_Allreduce(MPI_IN_PLACE, hSFbuf, row_pp, MPI_FLOAT, MPI_SUM, Row_comm);
-			MPI_Allgather(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, hSFbuf, row_bl, MPI_FLOAT, Row_comm);
-		//dump_farray2(hSFbuf, row_pp, "hSFbuf AFTER");
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		mpi_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		depm_time += mpi_time;
-#endif
-		*commu_time += mpi_time;
-		TIMER_START(1);
-#endif
-		//fprintf(outdebug, "sdc\n");
-		//Put delta into device memory
-		set_delta_cuda(hSFbuf,row_pp);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		depc_time += cuda_time;
-#endif
-		*compu_time += cuda_time;
-#endif
-
-		depth--;
-
-	} while (depth > 0);
-	// All delta values have been calculated and stored into device buffer we need to sum all them up
-	// only on the processors on column 0 i processor may be more then 1
-
-	LOCINT all = 0;
-	if (mycol == 0){
-// 		if nvisited + rem_ed == N the graph is connected otherwise I have more connected components so I have to take into account only the reach of the vertices in the current connected compoent.
-//              if ((nvisited + rem_ed) != (N) ){
-//              pre_update_bc_cuda(lvl, reach, v0, &all);
-//              if (R>1)
-//                      MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, Col_comm);
-//                      printf("TOTAL %d ;  visited  %d ;  edge_rem %d :ONLY scc %d\n",N, nvisited, rem_ed, );
-//              }else all = rem_ed;
-
-#ifdef _TIMINGS
-		TIMER_START(1);
-#endif
-
-		pre_update_bc_cuda(reach, v0, &all);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		updc_time += cuda_time;
-#endif
-		*compu_time += cuda_time;
-		TIMER_START(1);
-#endif
-
-		if (R>1)
-			MPI_Allreduce(MPI_IN_PLACE, &all, 1, LOCINT_MPI, MPI_SUM, Col_comm);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		mpi_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		updm_time += mpi_time;
-#endif
-		*commu_time += mpi_time;
-		TIMER_START(1);
-#endif
-
-		if (GI2PI(v0) == myrow) all += reach[GI2LOCI(v0)]; // questo serve?
-		update_bc_cuda(v0, row_pp, nvisited+all);
-
-#ifdef _TIMINGS
-		TIMER_STOP(1);
-		cuda_time = TIMER_ELAPSED(1);
-#ifdef _FINE_TIMINGS
-		updc_time += cuda_time;
-#endif
-		*compu_time += cuda_time;
-#endif
-
-	}
-
-	MPI_Barrier(MPI_COMM_CLUSTER);
-	TIMER_STOP(0);
-	*total_time = TIMER_ELAPSED(0);
-
-#ifdef _FINE_TIMINGS
-	upStats(v0, nvisited, level, msgSize,
-				upwc_time, upwm_time,
-				depc_time, depm_time,
-				updc_time, updm_time,
-				overlap_time, *compu_time, *commu_time, *total_time);
-#endif
-
-/*
-	get_msk(msk);
-
-	// compute teps
-	n = 0;
-	for(j = 0; j < row_pp; j++)
-			n += (!!MSKGET(msk,j)) * deg[j];
-
-	MPI_Reduce(&n, &ned, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_CLUSTER);
-	ned >>= 1; // ??
-	teps = ((double)ned)/(*total_time/1.0E+6);
-
-      if (0 == myid) {
-                fprintf(stdout, "\n\n\n\nElapsed time: %f secs\n", *total_time/1.0E+6);
-                fprintf(stdout, "Traversed edges: %"PRIu64"\n", ned);
-                fprintf(stdout, "Measured TEPS: %lf\n", teps);
-        }
-*/
-        /*
-        if (dump) {
-                dump_lvl(lvl, mycol*row_bl, mycol*row_bl+row_bl);
-                dump_prd(prd, mycol*row_bl, mycol*row_bl+row_bl, hSbuf, row_bl, hSnum, msk);
-        }
-    */
-	return teps;
-}
-
 //prd qui era un int ora e' LOCINT ma non dovrebbe essere usato
 static double bc_func_mono(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* frt, int* hFnum,
 					       LOCINT *msk, int *lvl, LOCINT *deg,
@@ -1682,13 +1247,13 @@ static double bc_func_mono(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* fr
 						   uint64_t v0, LOCINT *vRbuf, int *vRnum, LOCINT *hSbuf, int *hSnum, LOCINT *hRbuf,
 						   int *hRnum, float *hSFbuf, float *hRFbuf, LOCINT *reach,
 						   MPI_Request *vrequest, MPI_Request *hrequest, MPI_Status *status,
-						   uint64_t* total_time, int dump) {
+						   uint64_t* total_time, int limit_depth) {
 
 	int 	 level = 0, ncol;
 	uint64_t nfrt=0;
 	uint64_t nvisited = 1;
 	double	 teps=0;
-
+    if(limit_depth == 0 ) limit_depth = 1000000;
 
 	TIMER_DEF(0);
 
@@ -1707,15 +1272,6 @@ static double bc_func_mono(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* fr
 	memset(hFnum, 0, row_bl*sizeof(*hFnum));
 	memset((LOCINT *)frt, 0, row_pp*sizeof(*frt));
 
-	/* LOCINT *cbuf;
-	cbuf = (LOCINT *)Malloc(row_pp*sizeof(LOCINT));
-	memset((LOCINT *)cbuf, 0, row_pp*sizeof(*cbuf));
-	get_frt(frt);
-	dump_uarray2(frt, row_pp, "FRT-0");
-	get_cbuf(cbuf);
-	dump_uarray2(cbuf, row_pp, "CBUF-0");
-    */
-
 	LOCINT lv0 = GI2LOCI(v0);
 	nfrt++;
 	set_mlp_cuda(lv0, 0, 1);
@@ -1727,31 +1283,12 @@ static double bc_func_mono(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* fr
 		TIMER_START(1);
 #endif
 
-	while(1) {
-#ifdef _FINE_TIMINGS
-//		fprintf(stdout, "BFS_LEVEL=%d\n",level);
-		addStats(v0, level, nfrt);
-#endif
-		// We start a new BFS level
+	while(level < limit_depth) {
         level++;
 		hFnum[level] = hFnum[level-1] + nfrt;
-
-		// Now we have in vRbuf all vertices from all frontiers on the same Column
-		// vRnum is an array of size R containing how many elements are in VRbuf for each processor
-		// NOTE: we cannot have duplicates in vRbuf since each processor can send only nodes that it owns
-
-		// Get neightbour vertices that have not been visited yet and put them into hSbuf
-		/*
-		 *  vRbuf contains the frontier according to the following pattern
-		 *  each vRbuf[i] is long row_bl and contains vRnum[i] elements
-		 *  Va,Vb,Vc,Sa,Sb,Sc
-		 */
 		nfrt = scan_col_csc_cuda_mono(nfrt, level);
 		if (!nfrt) break; // Exit from the loop since we do not have new vertices to visit
 		nvisited += nfrt;
-
-		//get_sigma(sigma);
-		//dump_uarray2(sigma, row_pp, "Sigma");
 
 	} // While(1)
 
@@ -1760,38 +1297,13 @@ static double bc_func_mono(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* fr
 		upwc_time += TIMER_ELAPSED(1);
 		TIMER_START(1);
 #endif
-
-	//fprintf(outdebug, "BFS_done-visited=%d\n",nvisited);
-	// Copy sigma value from device to CPU
-
-	//get_sigma(sigma);
-	//dump_uarray2(sigma, row_pp, "Final Sigma");
-
-	//get_lvl(lvl);
-	//dump_array2(lvl, row_pp, "Final Level");
-
-	//dump_uarray2(frt_all_start, hFnum[level], "All Verticals Frontier");
-	//dump_array2(hFnum, level, "Final hFnum");
-	//dump_array2(lvl, row_pp, "Final Level after All reduce");
-
-
-    // SIGMA e LEVEL SONO INDICIZZATI PER RIGA
-	// Copy back sigma value from device to CPU
 	int depth = level - 2;
 	//frt = frt_all_start;
 	ncol = 0;
 
 	do {
-		//fprintf(outdebug, "Depth %d\n", depth);
-		//dump_array2(&depth, 1, "-- DEPTH --");
-		// exchange delta values calculated in the previous round
-
 	    ncol = hFnum[depth+1] - hFnum[depth]; // number of vertices to process
-	    //frt = frt_all_start + hFnum[depth];
-	    // Here I calculate hSRbuf for each vertex in the frontier
-	    // using the same index of the frontier
 	    scan_frt_csc_cuda_mono(hFnum[depth], ncol, depth);
-
 		depth--;
 
 	} while (depth > 0);
@@ -1827,36 +1339,13 @@ static double bc_func_mono(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* fr
 			0, 0, 0, *total_time);
 #endif
 
-	//get_msk(msk);
-
-	// compute teps
-	/*
-	n = 0;
-	for(j = 0; j < row_pp; j++)
-		n += (!!MSKGET(msk,j)) * deg[j];
-
-// 	MPI_Reduce(&n, &ned, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-	n >>= 1; // ??
-	teps = ((double)n)/(*total_time/1.0E+6);
-
-	if (0 == myid) {
-		fprintf(stdout, "\n\n\n\nElapsed time: %f secs\n", *total_time/1.0E+6);
-		fprintf(stdout, "Traversed edges: %"PRIu64"\n", ned);
-		fprintf(stdout, "Measured TEPS: %lf\n", teps);
-	}
-*/
-	/*
-	if (dump) {
-		dump_lvl(lvl, mycol*row_bl, mycol*row_bl+row_bl);
-		dump_prd(prd, mycol*row_bl, mycol*row_bl+row_bl, hSbuf, row_bl, hSnum, msk);
-	}
-    */
 	return teps;
 }
 
-static double bc_func_mono_2degree(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* frt, int* hFnum, LOCINT *frt_all_v1, LOCINT *frt_v1, int *hFnum_v1, LOCINT *msk, int *lvl, LOCINT *deg, LOCINT *sigma, LOCINT *frt_sig, float *delta, LOCINT rem_ed,  uint64_t v0, uint64_t v1, uint64_t v2, LOCINT *reach, uint64_t* total_time, int dump) {
+static double bc_func_mono_2degree(LOCINT *row, LOCINT *col, LOCINT *frt_all, LOCINT* frt, int* hFnum, LOCINT *frt_all_v1, LOCINT *frt_v1, int *hFnum_v1, LOCINT *msk, int *lvl, LOCINT *deg, LOCINT *sigma, LOCINT *frt_sig, float *delta, LOCINT rem_ed,  uint64_t v0, uint64_t v1, uint64_t v2, LOCINT *reach, uint64_t* total_time, int limit_depth) {
 
-
+    if(limit_depth == 0 ) limit_depth = 1000000;
+    limit_depth +=2;
 	//memory duplication in order to avoid mistake
 	int level_v1 = 0, ncol_v1;
 	int level_v2 = 0, ncol_v2;
@@ -1872,100 +1361,37 @@ static double bc_func_mono_2degree(LOCINT *row, LOCINT *col, LOCINT *frt_all, LO
 	int depth_v2 = 0;
 	int depth = 0;
 
-	//printf("2_degree[%s] (%ld) -> %ld %ld\n", __func__ ,v0, v1, v2);
-	// init 2_degree set zero vectors... setted by set_cuda_degree....
 	TIMER_DEF(0); // for upward
-
-#ifdef _FINE_TIMINGS
-	TIMER_DEF(1);
-	uint64_t msgSize = 0;
-	uint64_t upwc_time=0;   // UPWard Cuda
-	uint64_t depc_time=0;   // DEPendency Cuda
-	uint64_t updc_time=0;   // UPDate bc Cuda
-#endif
 	*total_time=0;
 
 	memset(hFnum, 0, row_bl*sizeof(*hFnum)); // for v2
-    	memset(hFnum_v1, 0, row_bl*sizeof(*hFnum));
+   	memset(hFnum_v1, 0, row_bl*sizeof(*hFnum));
 	memset((LOCINT *)frt_v1, 0, row_pp*sizeof(*frt));
 
 	LOCINT lv1 = GI2LOCI(v1);
 	LOCINT lv2 = GI2LOCI(v2);
-    	// v1 computation must be return sigma_v1 lvl_v0
 	set_mlp_cuda(lv1, 0, 1);
-    	nfrt_v1++;
+   	nfrt_v1++;
 	// START SSSP ON V1
 	TIMER_START(0);
-
-#ifdef _FINE_TIMINGS
-		TIMER_START(1);
-#endif
-
-	while(1) {
-#ifdef _FINE_TIMINGS
-		addStats(v0, level_v1, nfrt_v1);
-#endif
-		// We start a new BFS level
-       		level_v1++;
+	while(level_v1 < limit_depth) {
+   		level_v1++;
 		hFnum_v1[level_v1] = hFnum_v1[level_v1-1] + nfrt_v1;
 		nfrt_v1 = scan_col_csc_cuda_mono(nfrt_v1, level_v1);
 		if (!nfrt_v1) break; 
 		nvisited_v1 += nfrt_v1;
 	} // While(1)
 
-    //  get_sigma(sigma);
-    //  dump_uarray2(sigma, row_pp, "Final Sigma");
-	// Copy sigma value from device to CPU
-	//get_sigma(sigma);
-	//dump_uarray2(sigma, row_pp, "Final Sigma");
-	//get_lvl(lvl);
-	//dump_array2(lvl, row_pp, "Final Level");
-	//dump_uarray2(frt_all_start, hFnum[level], "All Verticals Frontier");
-	//dump_array2(hFnum, level, "Final hFnum");
-   	// SIGMA e LEVEL SONO INDICIZZATI PER RIGA
-	// Copy back sigma value from device to CPU
-
 	set_mlp_cuda_2degree(lv2, 0, 1);
 	nfrt_v2++;
 	//START SINGLE SSSP ON V2
-	while(1){
-#ifdef _FINE_TIMINGS
-		//addStats(v2, level_v2, nfrt_v2);
-#endif
+	while(level_v2 < limit_depth){
         level_v2++;
 		hFnum[level_v2] = hFnum[level_v2-1] + nfrt_v2;
 		nfrt_v2 = scan_col_csc_cuda_mono(nfrt_v2, level_v2);
 		if (!nfrt_v2) break; 
 		nvisited_v2 += nfrt_v2;
 	}
-
-#ifdef _FINE_TIMINGS
-		TIMER_STOP(1);
-		upwc_time += TIMER_ELAPSED(1);
-		TIMER_START(1);
-#endif
-        /*
-  	depth_v1 = level_v1 - 2;
-        depth_v2 = level_v2 - 2;
-	ncol_v1 = 0;
-        ncol_v2 = 0;
-        int test = 1;
-        if (test == 0 ){
-	do {
-	    	ncol_v1 = hFnum_v1[depth_v1+1] - hFnum_v1[depth_v1]; //number of nodes to process
-                scan_frt_csc_cuda_mono_2degree(hFnum_v1[depth_v1], ncol_v1, depth_v1,0);
-		depth_v1--;
-	} while (depth_v1 > 0);
-
-        do {
-	    	ncol_v2 = hFnum[depth_v2+1] - hFnum[depth_v2]; //number of nodes to process
-	   	scan_frt_csc_cuda_mono_2degree(hFnum[depth_v2], ncol_v2, depth_v2,1);
-		depth_v2--;
-	} while (depth_v2 > 0);
-        }
-        else{*/
-        //printf("MIXED DEP\n"); 
-
         depth_v1 = level_v1 - 2;
         depth_v2 = level_v2 - 2;
         ncol_v1 = 0;
@@ -1986,39 +1412,20 @@ static double bc_func_mono_2degree(LOCINT *row, LOCINT *col, LOCINT *frt_all, LO
 		  depth--;
         }while (depth >= 0);
 
-#ifdef _FINE_TIMINGS
-		TIMER_STOP(1);
-		depc_time += TIMER_ELAPSED(1);
-		TIMER_START(1);
-#endif
-
 	// All delta values have been calculated and stored into device buffer        
 	LOCINT all_v0, all_v1, all_v2 = 0;
         // UPDATE BC nota lvl qui non e' usato
 	pre_update_bc_cuda(reach, v0, &all_v0); //va fatta per 2-degree una sola volta
-        all_v1 = all_v2 = all_v0;
+       all_v1 = all_v2 = all_v0;
         //infatti i visited dei v0 v1 v2 sono sempre gli stessi.
 	all_v0 += reach[GI2LOCI(v0)];
-    	all_v1 += reach[GI2LOCI(v1)];
-    	all_v2 += reach[GI2LOCI(v2)];
+   	all_v1 += reach[GI2LOCI(v1)];
+   	all_v2 += reach[GI2LOCI(v2)];
 
     update_bc_cuda_2degree(v0, v1, v2, row_pp, nvisited_v1+all_v0,nvisited_v1+all_v1,nvisited_v1+all_v2);
-
-#ifdef _FINE_TIMINGS
-		TIMER_STOP(1);
-		updc_time += TIMER_ELAPSED(1);
-#endif
-
 	TIMER_STOP(0);
 	*total_time = TIMER_ELAPSED(0);
 
-#ifdef _FINE_TIMINGS
-	upStats(v0, nvisited_v1+2, MAX(level_v1,level_v2)+1, 0,
-				upwc_time, 0,
-				depc_time, 0,
-				updc_time, 0,
-				0, 0, 0, *total_time);
-#endif
    return 1;
 }
 
@@ -2106,7 +1513,7 @@ static void print_stats(double *teps, int n) {
 void usage(const char *pname) {
 
 	prexit("Usage:\n"
-			"\t %1$s -p RxC [-d dev0,dev1,...] [-o outfile] [-D] [-d] [-m] [-N <# of searches>]\n"
+			"\t %1$s -p RxC [-d dev0,dev1,...] [-o outfile] [-D] [-d] [-m] [-N max_depth]\n"
 		    "\t -> to visit a graph read from file:\n"
 		   "\t\t -f <graph file> -n <# vertices> [-r <start vert>]\n"
 		   "\t -> to visit an RMAT graph:\n"
@@ -2364,15 +1771,11 @@ int main(int argc, char *argv[]) {
 		fprintf(stdout, "Total number of vertices (N): %"PRIu64"\n", N);
 		fprintf(stdout, "Processor mesh rows (R): %d\n", R);
 		fprintf(stdout, "Processor mesh columns (C): %d\n", C);
-//              fprintf(stdout, "Number of rows per block (N/(R*C)): %"LOCPRI"\n", row_bl);
-//              fprintf(stdout, "Number of columns per block (N/C): %"LOCPRI"\n", col_bl);
-//              fprintf(stdout, "Total rows per processor (N/R): %"LOCPRI"\n", row_pp);
 		if (gread) {
 			fprintf(stdout, "Reading graph from file: %s\n", gfile);
 		} else {
 			fprintf(stdout, "RMAT graph scale: %d\n", scale);
 			fprintf(stdout, "RMAT graph edge factor: %d\n", edgef);
-			fprintf(stdout, "Number of bc rounds: %ld\n", nbfs);
 			if (random) fprintf(stdout, "Random mode\n");
 			else fprintf(stdout, "First node: %d\n", startv);
 		}
@@ -2561,26 +1964,10 @@ int main(int argc, char *argv[]) {
 
 	// Allocate BitMask to store visited unique vertices ???
 	msk = (LOCINT *)Malloc(((row_pp+BITS(msk)-1)/BITS(msk))*sizeof(*msk));
+    
+    int max_depth = nbfs;
+    if (max_depth < 2)  max_depth = 0;
 
-	if (!mono){
-		vRbuf = (LOCINT *)CudaMallocHostSet(2*col_bl*sizeof(*vRbuf), 0);  // We need to double the size for sigma
-		vRnum = (int *)CudaMallocHostSet(R*sizeof(*vRnum), 0);
-		hSbuf = (LOCINT *)CudaMallocHostSet(2*row_pp*sizeof(*hSbuf), 0);  // We need to double the size for sigma
-		hSnum = (int *)CudaMallocHostSet(C*sizeof(*hSnum), 0);
-		hRbuf = (LOCINT *)CudaMallocHostSet(2*row_pp*sizeof(*hRbuf), 0);  // We need to double the size for sigma
-		hRnum = (int *)CudaMallocHostSet(C*sizeof(*hRnum), 0);
-		hSFbuf = (float*)CudaMallocHostSet(MAX(col_bl, row_pp)*sizeof(*hSFbuf), 0);
-		hRFbuf = (float*)CudaMallocHostSet(MAX(col_bl, row_pp)*sizeof(*hRFbuf), 0);
-
-		status  =  (MPI_Status *) Malloc(MAX(C,R)*sizeof(*status));
-		vrequest = (MPI_Request *)Malloc(MAX(C,R)*sizeof(*vrequest));
-		hrequest = (MPI_Request *)Malloc(MAX(C,R)*sizeof(*hrequest));
-
-		// exchange for mpi warm-up
-		exchange_vert4x2(frt, frt_sigma, row_bl, vRbuf, row_bl, vRnum, vrequest, status, 1);
-		for(i = 0; i < C; i++) hSnum[i] = row_bl;
-		exchange_horiz4x2(hSbuf, row_bl, hSnum, hRbuf, row_bl, hRnum, hrequest, status, 1);
-	}
 
 	nbfs = MIN(N, nbfs);
 
@@ -2603,250 +1990,101 @@ int main(int argc, char *argv[]) {
 	LOCINT skip, reach_v0, nrounds=0, skipped=0;
 	LOCINT two_dg_c = 0;
 	LOCINT two_dg_n = 0;
-	uint64_t all_time=0, bc_time=0, min_time=UINT_MAX, max_time=0;
+	uint64_t all_time=0, all_time2=0,bc_time=0, triple_time=0, triple_time2=0, min_time=UINT_MAX, max_time=0;
 
-	// commu_all_time = overall time spent in communication
-	// compu_all_time = overall time spent in computation
 
-	uint64_t commu_all_time=0, commu_time=0, compu_all_time=0, compu_time=0;
-	if (myid == 0) fprintf(stdout, "task %d: BC computation is running...\n", gmyid);
+    printf("[Benchmark2d] Computing the total number of degree-1 and degree-2\n");
+    //NEW VARIABLE HERE: starting with special prefix.
+    int dgZ = 0;
+    int dgO = 0;
+    int dgT = 0;
+    unsigned int vertex=0;
+    for (i = 0 ; i < N ; i++){
+	    bc_order [i] = i; //naive iniit 
+	}
+    TIMER_START(0);
+    sort_by_degree(degree,  bc_order);
+    TIMER_STOP(0);
+    two_degree_reduction_time = TIMER_ELAPSED(0);
+    for (i = 0; i< N; i++){
+        if (degree[i] == 0) dgZ++;
+        if (degree[i] == 1) dgO++;
+        if (degree[i] == 2) dgT++;
+        vertex = bc_order[i];
+        // BC oreder e' il vertex id... degree non deve essere ri-indirizzato ha lo stesso ordine di bc_order...  
+   //     printf ("[Benchmark2d] bc_order[%ld]= %u (degree %d)\n",i, bc_order[i],degree[i]);
+    }
+    printf ("[Benchmark2d] Total vertices %lu\n", N);
+    printf ("[Benchmark2d] Total degree-0 %d - %.02f\n", dgZ, ((float)(dgZ*100) / (float)N) );
+    printf ("[Benchmark2d] Total degree-1 %d - %.02f\n", dgO, ((float)(dgO*100) / (float)N) );
+    printf ("[Benchmark2d] Total degree-2 %d - %.02f\n", dgT, ((float)(dgT*100) / (float)N) );
+
+//	uint64_t commu_all_time=0, commu_time=0, compu_all_time=0, compu_time=0;
+	if (myid == 0) fprintf(stdout, "[Benchmark2d] DMF vs MGBC ... MAX_DEPTH %d\n", gmyid, max_depth);
 	if (heuristic == 2 || heuristic == 3 ){
-
-        	LOCINT reach_v1 = 0, reach_v2;
+       	LOCINT reach_v1 = 0, reach_v2;
 		v0 = v1 = v2 = 0;
-		//Identify 2-degree nodes. Let b to be a 2-degree nodes: solution sorting
-		//identify child-a and child-b
-		//Perform mono_bc (modified ) from a
-		//Store in GPU sigma_a and lvl_a
-		//each 2_degree steps  must be profiled by using two_degree_reduction_time
-		for (i = 0 ; i < N ; i++){
-			bc_order [i] = i; //naive iniit 
-		}
-		TIMER_START(0);
-		sort_by_degree(degree,  bc_order);
-		TIMER_STOP(0);
-		two_degree_reduction_time = TIMER_ELAPSED(0);
-		ui = color;
+		ui = dgZ+dgO; // Prendo il primo indice 2degree
+        nbfs = dgT; // devo solamente calcolare il tempo di tutti di degree-2 con la nostra tecnica
 		while (nrounds < nbfs && (ui < N)) //for (ui = color; ui < nbfs; ui++)
 		{
-			skip = 0;
+            triple_time=0;
+            triple_time2=0;
 			v0 = bc_order[ui];
-			// bc_time = 0;
-			reach_v0 = 0;
-			if (prd[v0] != 0){
-				ui++;
-				continue; // bc scores already computed for these verticies
-			}
+  //          printf ("DEBUG %lu index %u\n",v0, ui);
+// CALCOLO LA PRIMA TRIPLE
+            v1 = row[col[v0]];
+            v2 = row[col[v0]+1];
+            reach_v0 = reach[GI2LOCI(v0)];
+            reach_v1 = reach[GI2LOCI(v1)];
+            reach_v2 = reach[GI2LOCI(v2)];
+// Eseguo degree Due
+           setcuda_2degree(reach_v0, reach_v1, reach_v2);
+           bc_func_mono_2degree(row, col,  frt_all, frt,  hFnum, frt_all_v1, frt_v1, hFnum_v1 ,msk,   lvl, degree,  sigma, frt_sigma, delta, rem_ed, v0, v1, v2, reach, &bc_time, max_depth);
+           triple_time = bc_time;
+           all_time +=bc_time;
 
-#ifdef _FINE_TIMINGS
-			setStats(v0, degree[GJ2LOCJ(v0)]);
-#endif
-			if (degree[ui] == 0){
-				skip = 1;
-				prd[v0] = 1;
-				skipped++;
-				ui++;
-				continue;
-			}
-			else if (degree[ui] == 2) {
-				two_dg_n++;
-				v1 = row[col[v0]];
-				v2 = row[col[v0]+1];
-				reach_v0 = reach[GI2LOCI(v0)];
-				if (prd[v1] != 0 ||  prd[v2] != 0){
-						setcuda(ned, col, row, reach_v0);
-						bc_func_mono(row, col,  frt_all, frt,  hFnum, msk,   lvl,   degree,  sigma, frt_sigma, delta, rem_ed, v0, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach, vrequest, hrequest, status, &bc_time, 0);
-						all_time += bc_time;
-						prd[v0] = 1;
-						nrounds++;
-				}
-				else{
-						two_dg_c++;
-						reach_v1 = reach[GI2LOCI(v1)];
-						reach_v2 = reach[GI2LOCI(v2)];
-						//setcuda per v0 v1 v2
-						//perform mono_bc on v1
-						//perform mono_bc on v2  and compute v0
-						//prd[v0] = v0; prd[v1] = v0; prd[v2] = v0; to skip
-						setcuda_2degree(reach_v0, reach_v1, reach_v2);
-						bc_func_mono_2degree(row, col,  frt_all, frt,  hFnum, frt_all_v1, frt_v1, hFnum_v1 ,msk,   lvl, degree,  sigma, frt_sigma, delta, rem_ed, v0, v1, v2, reach, &bc_time, 0);
-						prd[v0] = prd[v1]  = prd[v2] = 1;
-						all_time += bc_time;
-						nrounds+=3;
-				}
-			}
-			else{	
-				reach_v0 = reach[GI2LOCI(v0)];
-				setcuda(ned, col, row, reach_v0);
-                		prd[v0]= 1;
-				bc_func_mono(row, col,  frt_all, frt,  hFnum, msk,   lvl,   degree,  sigma, frt_sigma, delta, rem_ed, v0, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach, vrequest, hrequest, status, &bc_time, 0);
-				all_time += bc_time;
-				nrounds++;
-			}
+// Eseguo 3 Bc sulla tripla
+           setcuda(ned, col, row, reach_v0);
+           bc_func_mono(row, col,  frt_all, frt,  hFnum, msk,   lvl,   degree,  sigma, frt_sigma, delta, rem_ed, v0, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach, vrequest, hrequest, status, &bc_time, max_depth);
+           all_time2 +=bc_time;
+           triple_time2 += bc_time;
+           
+           setcuda(ned, col, row, reach_v1);
+           bc_func_mono(row, col,  frt_all, frt,  hFnum, msk,   lvl,   degree,  sigma, frt_sigma, delta, rem_ed, v1, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach, vrequest, hrequest, status, &bc_time, max_depth);
+           all_time2 +=bc_time;
+           triple_time2 += bc_time;
+
+
+           setcuda(ned, col, row, reach_v2);
+           bc_func_mono(row, col,  frt_all, frt,  hFnum, msk,   lvl,   degree,  sigma, frt_sigma, delta, rem_ed, v2, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach, vrequest, hrequest, status, &bc_time, 0);
+           all_time2 +=bc_time;
+           triple_time2 += bc_time;
+// FINE TRIPLA
+            nrounds++;
+            printf ("[Benchmark2d] Triple[%u] vertices %lu %lu %lu - TIME  DMF %lf -  MGBC %lf - secs\n",nrounds, v0, v1, v2, triple_time/1.0E+6, triple_time2/1.0E+6);
 			if (bc_time > max_time ) max_time = bc_time;
 			if (bc_time < min_time && bc_time != 0 ) min_time= bc_time;
 			ui++;
 		}
 	}
-	else{// NO H 2 o H 3
-		for(ui = color; ui < nbfs; ui += cntask) {
-
-			switch (random) {
-				case 0: v0 = startv + ui; break;
-				case 1: v0 = select_root1(col); break;
-				case 2: v0 = select_root2(col); break;
-				case 3: v0 = select_root3(col); break;
-				default: v0 = startv + ui; break;
-			}
-
-			skip = 0;
-            //v0 = startv + ui;
-			bc_time = 0;
-			reach_v0 = 0;
-			if (VERT2PROC(v0) == myid) {
-			//fprintf(stdout,"Root = %lu; TaskId=%d; LocalId=%d\n", v0, myid, GJ2LOCJ(v0));
-
-#ifdef _FINE_TIMINGS
-			setStats(v0, degree[GJ2LOCJ(v0)]);
-#endif
-				// Check v0 degree
-				if (degree[GJ2LOCJ(v0)]==0) {
-					skip=1;
-				}
-				reach_v0 = reach[GI2LOCI(v0)];
-			}
-			if (ntask > 1)
-				MPI_Allreduce(MPI_IN_PLACE, &skip, 1, LOCINT_MPI, MPI_SUM, MPI_COMM_CLUSTER);
-			// Root vertex with degree 0
-			if (skip) {
-				//teps[ui] = 0;
-					skipped++;
-					continue;
-			}
-
-			if (ntask > 1)
-				MPI_Allreduce(MPI_IN_PLACE, &reach_v0, 1, LOCINT_MPI, MPI_SUM, MPI_COMM_CLUSTER);
-				// fprintf(outdebug,"Root = %lu; Reach = %d;\n", v0, reach_v0);
-
-			setcuda(ned, col, row, reach_v0);
-
-			if (mono == 0) {
-                //teps[ui]=
-				     bc_func(row, col,  frt_all, frt,  hFnum, msk,   lvl, degree,  sigma, frt_sigma, delta, rem_ed,
-							 v0, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach,
-								 vrequest, hrequest, status, &bc_time, &compu_time, &commu_time, 0);
-			} else {
-                //teps[ui]=
-				    bc_func_mono(row, col,  frt_all, frt,  hFnum, msk,   lvl, degree,  sigma, frt_sigma, delta, rem_ed,
-								      v0, vRbuf,  vRnum, hSbuf, hSnum, hRbuf, hRnum, hSFbuf, hRFbuf, reach,
-									  vrequest, hrequest, status, &bc_time, 0);
-			}
-			nrounds++;
-			all_time += bc_time;
-			commu_all_time += commu_time;
-			compu_all_time += compu_time;
-
-			if (bc_time > max_time ) max_time = bc_time;
-			if (bc_time < min_time && bc_time != 0 ) min_time= bc_time;
-		}
-	}
-
-    TIMER_START(0);
-	if (mycol == 0) {
-		get_bc(bc_val);
-		if(color==0) {
-			MPI_Reduce(MPI_IN_PLACE,bc_val,row_pp,MPI_FLOAT,MPI_SUM,0,MPI_COMM_COL);
-		} else {
-			MPI_Reduce(bc_val,NULL,row_pp,MPI_FLOAT,MPI_SUM,0,MPI_COMM_COL);
-		}
-	}
-	TIMER_STOP(0);
-	uint64_t bcred_time = TIMER_ELAPSED(0);
-
-//        if(gmyid==0) {
-//        MPI_Allreduce(MPI_IN_PLACE,bc_val,row_pp,MPI_FLOAT,MPI_SUM,MPI_COMM_WORLD);
-//        } else {
-//          MPI_AllReduce(bc_val,NULL,row_pp,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
-//        }
-	if (mycol == 0 && color == 0 && resname != NULL) {
-		FILE *resout = fopen(resname,"w");
-
-		fprintf(resout,"BC RESULTS\n");
-		fprintf(resout,"ROWPP %u\n", row_pp);
-		fprintf(resout,"NodeId\tBC_VAL\n");
-		LOCINT k;
-		for (k=0;k<row_pp;k++) {
-			fprintf(resout,"%d\t%.2f\n", LOCI2GI(k) ,bc_val[k]/2.0);
-		}
-		fclose(resout);
-	}
-
-	MPI_Barrier(MPI_COMM_WORLD);
-	// REDUCE MPI compu_all_time/1.0E+6
-	// commu_all_time/1.0E+6
-
-	uint64_t comp_avg_time = 0;
-	uint64_t  comm_avg_time= 0;
-	MPI_Reduce(&compu_all_time,&comp_avg_time,1,MPI_UINT64_T,MPI_SUM,0,MPI_COMM_CLUSTER);
-	MPI_Reduce(&commu_all_time,&comm_avg_time,1,MPI_UINT64_T,MPI_SUM,0,MPI_COMM_CLUSTER);
-	comp_avg_time =  comp_avg_time/ntask;	
-	comm_avg_time = comm_avg_time/ntask;
+	
 
 	MPI_Barrier(MPI_COMM_WORLD);
 	if (myid == 0) {
 
-		fprintf(stdout, "\n------------- RESULTS ---------------\n");
-
-		fprintf(stdout,"ClusterId\tSkip\tRounds\tExecTime\tRoundsTime\tCUDATime(avg)\tMPITime(avg)\t\tMax\tMin\tMean\t1-dReduTime\n");
-		fprintf(stdout,"%d\t%d\t%d\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\n",
-				 	 	 	 	 	 	 	 color, skipped, nrounds,
-				                             (all_time+bcred_time)/1.0E+6,
-											 all_time/1.0E+6,
-											 comp_avg_time/1.0E+6,
-											 comm_avg_time/1.0E+6,
-											 max_time/1.0E+6,
-											 min_time/1.0E+6,
-											 all_time/1.0E+6/nrounds,
-											 degree_reduction_time/1.0E+6);
-
-		fprintf(stdout,"task %d BC skipped: %d \n", gmyid, skipped);
-		fprintf(stdout,"task %d BC rounds: %d  \n", gmyid, nrounds);
-		fprintf(stdout,"task %d BC execution total time: %lf sec\n",gmyid,(all_time+bcred_time)/1.0E+6);
-		fprintf(stdout,"task %d BC rounds total time: %lf sec\n",gmyid,all_time/1.0E+6);
-		fprintf(stdout,"task %d BC rounds Computation CUDA avg time: %lf sec over %d procs\n",gmyid,  comp_avg_time/1.0E+6, ntask);
-		fprintf(stdout,"task %d BC rounds Communication MPI avg time: %lf sec over %d procs\n",gmyid, comm_avg_time/1.0E+6, ntask);
-		fprintf(stdout,"task %d BC Max time: %lf sec\n",gmyid, max_time/1.0E+6);
-		fprintf(stdout,"task %d BC Min time: %lf sec\n",gmyid, min_time/1.0E+6);
-		fprintf(stdout,"task %d BC Mean time: %lf sec\n",gmyid, all_time/1.0E+6/nrounds);
-		if (nbfs < N){
-			unsigned int vskipped = 0;
-			vskipped=(N-nbfs)*skipped/nbfs;
-			double avg = all_time/1.0E+6/nrounds; 
-			fprintf(stdout,"task %d BC simulated time: %lf sec (virtual skipped %d)\n",gmyid, avg*(N-skipped-vskipped)/cntask, vskipped);
-			fprintf(stdout,"task %d BC simulated time-2: %lf sec\n",gmyid, ((((all_time+bcred_time)/1.0E+6)/nbfs)*N)/cntask);
-
-		}
 		if ( heuristic == 1 || heuristic == 3 ){
-			fprintf(stdout,"task %d 1-Degree reduction: %lf sec\n",gmyid, degree_reduction_time/1.0E+6);
+			fprintf(stdout,"[Benchmark2d] Degree-1 Reduction Preprocessing %lf sec\n",degree_reduction_time/1.0E+6);
 		}
 		if ( heuristic == 2 || heuristic == 3 ){
-			fprintf(stdout,"task %d 2-Degree reduction: %lf sec.(2-degree nodes computed by 2-degree fun %d/%d)\n",gmyid, two_degree_reduction_time/1.0E+6, two_dg_c, two_dg_n);
-                }                
-		//fprintf(stdout,"task %d Sigma-lvl time: %lf sec\n",gmyid, overlap_time/1.0E+6);
+			fprintf(stdout,"[Benchmark2d] Degree-2 Sorting Preprocessing  %lf secs\n",two_degree_reduction_time/1.0E+6);
+			fprintf(stdout,"[Benchmark2d] TIME DMF %lf  - MGBC %lf secs\n",all_time/1.0E+6/nrounds, all_time2/1.0E+6/nrounds  );
+            fprintf(stdout,"[Benchmark2d] DMF IMP %lf percent\n",100-(((float)(all_time/1.0E+6/nrounds)*100)/ (float)(all_time2/1.0E+6/nrounds)) );
+            fprintf(stdout,"[Benchmark2d] DMF EFFICIENCY %lf percent\n",100*(100-(((float)(all_time/1.0E+6/nrounds)*100)/ (float)(all_time2/1.0E+6/nrounds)))/32.18 );
+
+        }                
 		fprintf(stdout, "\n");
 	}
-
-#ifdef _FINE_TIMINGS
-#ifdef PRINTSTATS
-	writeStats();
-#endif
-#endif
-	MPI_Barrier(MPI_COMM_WORLD);
-	if (gmyid == 0){
-		fprintf(stdout,"System summary:\n Total(gntask) GPUs %d - Total(fd) ntask %d - Total(fr)  cntask %d\n", gntask, ntask, cntask);
-
-	}
-	MPI_Barrier(MPI_COMM_WORLD);
 	if (outdebug!=NULL) fclose(outdebug);
 		fprintf(stdout, "WNODE Global-ID %d - Cluster-ID %d -  Local-ID %d ... closing\n",gmyid,color,  myid);
 
@@ -2854,18 +2092,9 @@ int main(int argc, char *argv[]) {
 	freeMem(col);
 	freeMem(row);
 	freeMem(mystats);
-//	cudaHostUnregister(lvl);
-//	freeMem(lvl);
 	freeMem(msk);
-	//freeMem(deg);
-	//freeMem(status);
-	//freeMem(vrequest);
-	//freeMem(hrequest);
 	freeMem(gfile);
 	freeMem(teps);
-//	cudaHostUnregister(sigma);
-//	freeMem(sigma);
-
 	fincuda();
 	CudaFreeHost(lvl);
 	CudaFreeHost(sigma);
@@ -2887,9 +2116,9 @@ int main(int argc, char *argv[]) {
 	CudaFreeHost(hSFbuf);
 	CudaFreeHost(hRFbuf);
 //2-degree
-        CudaFreeHost(frt_v1);
-        CudaFreeHost(frt_all_v1);
-       	CudaFreeHost(hFnum_v1);
+    CudaFreeHost(frt_v1);
+    CudaFreeHost(frt_all_v1);
+   	CudaFreeHost(hFnum_v1);
 	
 //ONEPREFIX
 	freeMem(tlvl);

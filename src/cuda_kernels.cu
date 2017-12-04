@@ -16,7 +16,7 @@
 #include "bc2d.h"
 using namespace cub;
 
-// BEST  DRAKE 128 1 2 
+// BEST  DRAKE 128 2 1 
 // BEST PizDaint 2 2  256
 #define THREADS (128)
 #define ROWXTH 2
