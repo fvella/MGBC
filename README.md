@@ -15,7 +15,7 @@ The computation time of a 234 million edges graph is reduced to less than 2 hour
 Dependencies Tested: MPI implementation for CRAY, cuda-6.5+ and compute capability >= 3.5
 
 ```
-cd bc2d/generator
+cd <path>/generator
 
 make
 
@@ -24,7 +24,7 @@ cd ../src
 make -f Makefile
 ```
 
-EXEC: bc2d/bin
+EXEC: <path>/bin
 
 Usage: 
 ./mgbc -h
