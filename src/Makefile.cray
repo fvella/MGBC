@@ -1,0 +1,34 @@
+CC=gcc
+LD=gcc
+EXEC=bc2d-1d
+CUDAHOME=$(CUDATOOLKIT_HOME)
+CUDACC=$(CUDAHOME)/bin/nvcc 
+CUDA_ARCH=-arch=sm_35
+CUDACFLAGS=-m64 -c -O3  --ptxas-options=-v -DCUDA --use_fast_math
+# -DUSE_NVTXi
+#CFLAGS=-g -std=c99 -W -Wall -Wno-unused-function -c -O3 -D_TIMINGS -D_LARGE_LVERTS_NUM
+#CFLAGS= -g -std=c99 -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -DMPI -DCUDA -D_TIMINGS 
+
+CFLAGS= -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -DMPI -DCUDA  -L$(MPICH_DIR)/lib -lmpich -I$(CUDAHOME)/include
+LDFLAGS = -L$(MPICH_DIR)/lib -lmpich ../../generator/libgraph_generator_mpi.a -L$(CUDAHOME)/lib64 -lcudart -lstdc++  $(CRAY_CUDATOOLKIT_POST_LINK_OPTS) #-lnvToolsExt
+
+
+MPI_LIB=$(MPICH_DIR)/lib
+#CFLAGS=-g -std=c99 -c -O3 -DMPI
+
+#LDFLAGS = -L/root/mpiP-3.4.1/lib -lmpiP -L/opt/cuda-5.5/lib64 -lcudart -lbfd -liberty -lunwind
+
+OBJ=bc2d.o cuda_kernels.o adtp.o
+
+
+bc2d: ${OBJ}
+	${LD} -o ../bin/$(EXEC) ${OBJ} ${LDFLAGS}
+
+.c.o:; $(CC) $(CFLAGS) -I$(MPICH_DIR)/include    $< -o $@
+
+%.o: %.cu
+	$(CUDACC) $(CUDACFLAGS) $(CUDA_ARCH) -I$(MPICH_DIR)/include  $<
+clean:
+	rm -rf *.o  ../bin/$(EXEC)
+init:
+	cp  ../bin/$(EXEC) /scratch/daint/bernasch/bc/bc2d

@@ -1,0 +1,39 @@
+CC=nvcc
+LD=nvcc
+CUDAHOME=/usr/local/cuda
+MPI_DIR=/Users/massimo/openmpi
+CUDACC=$(CUDAHOME)/bin/nvcc 
+CUDA_ARCH=-arch=sm_30
+#CUDACFLAGS=-m64 -c -O3  --ptxas-options=-v -DCUDA  -DUSE_NVTX
+CUDACFLAGS=-m64 -c -O3  --ptxas-options=-v -DCUDA 
+#CFLAGS=-g -std=c99 -W -Wall -Wno-unused-function -c -O3 -D_TIMINGS -D_LARGE_LVERTS_NUM
+#CFLAGS= -g -std=c99 -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -DMPI -DCUDA -D_TIMINGS 
+
+#CFLAGS=-g -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -DMPI -DCUDA  -L$(MPI_DIR)/lib -lmpih -DUSE_NVTX  -I$(CUDAHOME)/include
+CFLAGS=-g -c -O3 -DMPI -DCUDA  -L$(MPI_DIR)/lib -lmpi -I$(CUDAHOME)/include
+#LDFLAGS = -L$(MPI_DIR)/lib -lmpi ../../generator/libgraph_generator_mpi.a -L$(CUDAHOME)/lib -lcudart -lstdc++ -lnvToolsExt
+LDFLAGS = -L$(MPI_DIR)/lib -lmpi ../../generator/libgraph_generator_mpi.a -L$(CUDAHOME)/lib -lcudart -lstdc++
+
+
+MPI_LIB=$(MPI_DIR)/lib
+#CFLAGS=-g -std=c99 -c -O3 -DMPI
+
+#LDFLAGS = -L/root/mpiP-3.4.1/lib -lmpiP -L/opt/cuda-5.5/lib64 -lcudart -lbfd -liberty -lunwind
+
+OBJ=bc2d.o cuda_kernels.o adtp.o
+
+
+bc2d: ${OBJ}
+	${LD} -o bc2d ${OBJ} ${LDFLAGS}
+
+.c.o:; $(CC) $(CFLAGS) -I$(MPI_DIR)/include    $< -o $@
+
+%.o: %.cu
+	$(CUDACC) $(CUDACFLAGS) $(CUDA_ARCH) -I$(MPI_DIR)/include  $<
+clean:
+	rm -rf *.o bc2d
+init:
+	rm /lustre/fvella/bc-1dg
+	mv bc2d /lustre/fvella/bc-1dg
+	rm /lustre/fvella/bcout_*
+	rm /lustre/fvella/debug_*
