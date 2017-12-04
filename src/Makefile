@@ -1,13 +1,13 @@
 CC=gcc
 LD=gcc
 EXEC=mgbc
-CUDAHOME=/usr/local/cuda-9.0
+CUDAHOME=/usr/local/cuda-8.0.61/
 CUDACC=$(CUDAHOME)/bin/nvcc 
 CUDA_ARCH=-arch=sm_35
 CUDACFLAGS=-m64 -c -O3  --ptxas-options=-v -DCUDA
 
 MPI_DIR=/usr/lib/openmpi
-CFLAGS=-g -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -DMPI -DCUDA  -L$(MPI_DIR)/lib -lmpi -DUSE_NVTXi  -I$(CUDAHOME)/include
+CFLAGS=-g -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -DMPI -DCUDA  -L$(MPI_DIR)/lib -lmpi  -I$(CUDAHOME)/include
 LDFLAGS = -L$(MPI_DIR)/lib -lmpi ../generator/libgraph_generator_mpi.a -L$(CUDAHOME)/lib64 -lcudart -lstdc++ -lm 
 MPI_LIB=$(MPI_DIR)/lib
 
