@@ -9,6 +9,7 @@ MGBC supports degree-1 reduction (2D and 3D) and DMF algorithms heuristics (only
 Experimental results show that the proposed techniques are well suited to compute BC scores in graphs which are too large to fit in single GPU memory. 
 The computation time of a 234 million edges graph is reduced to less than 2 hours.
 
+[CK Demo for reproducibility on single GPU](https://github.com/ctuning/ck-bc)
 
 ### How do I get set up? ###
 
