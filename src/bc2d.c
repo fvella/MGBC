@@ -2771,9 +2771,6 @@ int main(int argc, char *argv[]) {
 	if (mycol == 0 && color == 0 && resname != NULL) {
 		FILE *resout = fopen(resname,"w");
 
-		fprintf(resout,"BC RESULTS\n");
-		fprintf(resout,"ROWPP %u\n", row_pp);
-		fprintf(resout,"NodeId\tBC_VAL\n");
 		LOCINT k;
 		for (k=0;k<row_pp;k++) {
 			fprintf(resout,"%d\t%.2f\n", LOCI2GI(k) ,bc_val[k]/2.0);
