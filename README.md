@@ -81,4 +81,5 @@ $> mpirun -np 8 mgbc -p 2x2 -S 20 -E 16 -N 10000 -H 1
 ### References  ###
 * Massimo Bernaschi, Giancarlo Carbone, and Flavio Vella. 2015. Betweenness centrality on Multi-GPU systems. In Proceedings of the 5th Workshop on Irregular Applications: Architectures and Algorithms (IA3 '15). ACM, New York, NY, USA, , Article 12 , 4 pages. DOI: https://doi.org/10.1145/2833179.2833192
 * Massimo Bernaschi, Giancarlo Carbone, and Flavio Vella. 2016. Scalable betweenness centrality on multi-GPU systems. In Proceedings of the ACM International Conference on Computing Frontiers (CF '16). ACM, New York, NY, USA, 29-36. DOI: https://doi.org/10.1145/2903150.2903153
-* Flavio Vella, Giancarlo Carbone, Massimo Bernaschi. Algorithms and heuristics for scalable betweenness centrality computation on multi-GPU systems. https://arxiv.org/abs/1602.00963
+* Flavio Vella, Massimo Bernaschi, and Giancarlo Carbone. 2018. Dynamic Merging of Frontiers for Accelerating the Evaluation of Betweenness Centrality. J. Exp. Algorithmics 23, Article 1.4 (2018), 19 pages. DOI:https://doi.org/10.1145/3182656
+.
